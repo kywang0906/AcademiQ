@@ -1,0 +1,12 @@
+.icon {
+  display: block;
+  margin: 0 auto;
+  padding: 0 auto;
+  border: 0 auto;
+  height: auto;
+  width: 100px;
+}
+
+.search-box-container {
+  padding-bottom: 40px;
+}
