@@ -427,22 +427,30 @@ class Indexer:
                     del index.index[token]
             
         return index
-
+    
+    
     @staticmethod
-    def create_index_from_inverted_index(index_type: IndexType, dataset_path: str, stopwords: set[str], docid_to_id,
-                     minimum_word_frequency: int, max_docs: int = -1) -> InvertedIndex:
+    def create_author_index(index_type: IndexType, dataset_path: str,
+                     document_preprocessor: Tokenizer, stopwords: set[str], authorid_to_id, authorid_list: set[str],
+                     minimum_word_frequency: int, text_key="text",
+                     max_docs: int = -1, doc_augment_dict = None) -> InvertedIndex:
         """
-        Creates an inverted index from inverted index.
+        Creates an inverted index.
 
         Args:
             index_type: This parameter tells you which type of index to create, e.g., BasicInvertedIndex
             dataset_path: The file path to your dataset
+            document_preprocessor: A class which has a 'tokenize' function which would read each document's text
+                and return a list of valid tokens
             stopwords: The set of stopwords to remove during preprocessing or 'None' if no stopword filtering is to be done
             minimum_word_frequency: An optional configuration which sets the minimum word frequency of a particular token to be indexed
                 If the token does not appear in the document at least for the set frequency, it will not be indexed.
                 Setting a value of 0 will completely ignore the parameter.
+            text_key: The key in the JSON to use for loading the text
             max_docs: The maximum number of documents to index
                 Documents are processed in the order they are seen.
+            doc_augment_dict: An optional argument; This is a dict created from the doc2query.csv where the keys are
+                the document id and the values are the list of queries for a particular document.
 
         Returns:
             An inverted index
@@ -453,34 +461,29 @@ class Indexer:
         with open(dataset_path, 'r') as f:
             for i, line in enumerate(tqdm(f)):
                 doc = json.loads(line)
-                if doc['abstract'] == '':
+                if doc['abstract'] == '' or doc['n_citation'] <=20 or len(doc['authors']) == 0:
                     continue
-
-                docid = doc['id']
-                invertedIndex = doc['indexed_abstract']['InvertedIndex']
-                indexLength = doc['indexed_abstract']['IndexLength']
-
-                # reconstruct raw text from inverted index
-                raw_tokens = [''] * indexLength
-                for token in invertedIndex:
-                    for pos in invertedIndex[token]:
-                        raw_tokens[pos] = token
-
-                # sanitize token
-                edited_invertedIndex = {}
-                for token in invertedIndex:
-                    edited_token = re.sub(r"[,.;@#?!&$\(\)\{\}\[\]]+", "", token.lower())
-                    edited_invertedIndex[edited_token] = invertedIndex[token]
-
-                if stopwords != None:
-                    token_to_rmv = []
-                    for token in edited_invertedIndex:
-                        if token in stopwords:
-                            token_to_rmv.append(token)
-                    for token in token_to_rmv:
-                        del edited_invertedIndex[token]
+                
+                for i, _ in enumerate(doc['authors']):
+                    if doc['authors'][i]['id'] not in authorid_list:
+                        continue
+                    
+                    docid = authorid_to_id[doc['authors'][i]['id']]
                             
-                index.add_inidx_doc(docid, edited_invertedIndex, indexLength)
+                    text = doc[text_key]
+                    tokens = document_preprocessor.tokenize(text)
+
+                    if doc_augment_dict != None:
+                        aug_text = " ".join(doc_augment_dict[docid])
+                        aug_tokens = document_preprocessor.tokenize(aug_text)
+                        tokens += aug_tokens
+
+                    if stopwords != None:
+                        for i, token in enumerate(tokens):
+                            if token in stopwords:
+                                tokens[i] = None
+
+                    index.add_doc(docid, tokens)
 
             if minimum_word_frequency > 1:
                 term_removed = []
@@ -496,5 +499,82 @@ class Indexer:
                     del index.index[token]
             
         return index
+    
+    
+    @staticmethod
+    def create_author_index(index_type: IndexType, dataset_path: str,
+                     document_preprocessor: Tokenizer, stopwords: set[str], authorid_to_id, authorid_list: set[str],
+                     minimum_word_frequency: int, text_key="text",
+                     max_docs: int = -1, doc_augment_dict = None) -> InvertedIndex:
+        """
+        Creates an inverted index.
 
+        Args:
+            index_type: This parameter tells you which type of index to create, e.g., BasicInvertedIndex
+            dataset_path: The file path to your dataset
+            document_preprocessor: A class which has a 'tokenize' function which would read each document's text
+                and return a list of valid tokens
+            stopwords: The set of stopwords to remove during preprocessing or 'None' if no stopword filtering is to be done
+            minimum_word_frequency: An optional configuration which sets the minimum word frequency of a particular token to be indexed
+                If the token does not appear in the document at least for the set frequency, it will not be indexed.
+                Setting a value of 0 will completely ignore the parameter.
+            text_key: The key in the JSON to use for loading the text
+            max_docs: The maximum number of documents to index
+                Documents are processed in the order they are seen.
+            doc_augment_dict: An optional argument; This is a dict created from the doc2query.csv where the keys are
+                the document id and the values are the list of queries for a particular document.
 
+        Returns:
+            An inverted index
+        """
+        index_dict = dict()
+        
+        if index_type == IndexType.InvertedIndex:
+            index = BasicInvertedIndex()                
+
+        with open(dataset_path, 'r') as f:
+            for i, line in enumerate(tqdm(f)):
+                doc = json.loads(line)
+                if doc['abstract'] == '' or doc['n_citation'] <=20 or len(doc['authors']) == 0:
+                    continue
+                
+                for i, _ in enumerate(doc['authors']):
+                    if doc['authors'][i]['id'] not in authorid_list:
+                        continue
+                    
+                    docid = authorid_to_id[doc['authors'][i]['id']]
+                            
+                    text = doc[text_key]
+                    tokens = document_preprocessor.tokenize(text)
+
+                    if doc_augment_dict != None:
+                        aug_text = " ".join(doc_augment_dict[docid])
+                        aug_tokens = document_preprocessor.tokenize(aug_text)
+                        tokens += aug_tokens
+
+                    if stopwords != None:
+                        for i, token in enumerate(tokens):
+                            if token in stopwords:
+                                tokens[i] = None
+
+                    if docid not in index_dict:
+                        index_dict[docid] = tokens
+                    else:
+                        index_dict[docid] += tokens
+            for docid in tqdm(index_dict):
+                index.add_doc(docid, index_dict[docid])
+
+            if minimum_word_frequency > 1:
+                term_removed = []
+                for token in index.index:
+                    if index.get_term_metadata(token)['count'] < minimum_word_frequency:
+                        term_removed.append(token)
+
+                for token in term_removed:
+                    for post in index.index[token]:
+                        index.document_metadata[post[0]]['unique_tokens'] -= 1
+                    index.statistics['stored_total_token_count'] -= index.get_term_metadata(token)['count']
+                    index.statistics['unique_token_count'] -= 1
+                    del index.index[token]
+            
+        return index

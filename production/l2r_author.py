@@ -51,15 +51,13 @@ class L2RRanker:
                 for i, qword in enumerate(query_parts):
                     if qword in self.stopwords:
                         query_parts[i] = None
-            doc_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.document_index, query_parts)
-            title_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.title_index, query_parts)
+            doc_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.author_index, query_parts)
 
             qcount = 0
             for docid, RelevanceScore in query_to_document_relevance_scores[query]:
                 X.append(self.feature_extractor.generate_features(
                     docid, 
                     doc_word_counts_dict[docid], 
-                    title_word_counts_dict[docid],
                     query_parts,
                     query))
                 y.append(RelevanceScore)
@@ -105,7 +103,7 @@ class L2RRanker:
         train_df = pd.read_csv(training_data_filename)
         for i in tqdm(range(len(train_df))):
             query = train_df.iloc[i]['query']
-            docid = train_df.iloc[i]['docid']
+            docid = train_df.iloc[i]['authorid']
             rel = train_df.iloc[i]['rel']
             query_to_document_relevance_scores_train[query].append((docid, rel))
         X_train, y_train, qgroups = self.prepare_training_data(query_to_document_relevance_scores_train)
@@ -117,7 +115,7 @@ class L2RRanker:
         train_df = pd.read_csv(training_data_filename)
         for i in tqdm(range(len(train_df))):
             query = train_df.iloc[i]['query']
-            docid = train_df.iloc[i]['docid']
+            docid = train_df.iloc[i]['authorid']
             rel = train_df.iloc[i]['rel']
             query_to_document_relevance_scores_train[query].append((docid, rel))
         X_train, y_train, qgroups = self.prepare_training_data(query_to_document_relevance_scores_train)
@@ -160,8 +158,7 @@ class L2RRanker:
             for i, qword in enumerate(query_parts):
                 if qword in self.stopwords:
                     query_parts[i] = None
-        doc_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.document_index, query_parts)
-        title_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.title_index, query_parts)
+        doc_word_counts_dict = self.accumulate_doc_term_counts(self.feature_extractor.author_index, query_parts)
 
         scores = self.ranker.query(query)
         scores_top = scores[0:cutoff]
@@ -176,13 +173,13 @@ class L2RRanker:
             docid_top.append(docid)
             ft_vec = self.feature_extractor.generate_features(
                     docid, doc_word_counts_dict[docid],
-                    title_word_counts_dict[docid], query_parts, query
+                    query_parts, query
                 )
             feature_vectors.append(ft_vec)
             self.feature_vectors_collection.append(ft_vec)
 
         rerank_scores = self.predict(feature_vectors)
-
+        self.feature_vectors = feature_vectors
         scores_resorted = []
         for i, docid in enumerate(docid_top):
             scores_resorted.append((docid, rerank_scores[i]))
@@ -192,38 +189,26 @@ class L2RRanker:
         return scores_resorted
 
 class L2RFeatureExtractor:
-    def __init__(self, document_index: InvertedIndex, title_index: InvertedIndex,
-                 doc_category_info: dict[int, list[str]],
+    def __init__(self, author_index: InvertedIndex, author_on_title_index: InvertedIndex,
                  document_preprocessor: Tokenizer, stopwords: set[str],
-                 recognized_categories: set[str], docid_to_network_features: dict[int, dict[str, float]],
-                 docid_to_yr: dict[int, int], docid_to_citation: dict[int, int]) -> None:
+                 id_to_features: dict[int, dict[str, float]]) -> None:
         """
         Initializes a L2RFeatureExtractor object.
 
         Args:
-            document_index: The inverted index for the contents of the document's main text body
-            title_index: The inverted index for the contents of the document's title
-            doc_category_info: A dictionary where the document id is mapped to a list of categories
+            author_index: The inverted index for the contents of the author
             document_preprocessor: The DocumentPreprocessor to use for turning strings into tokens
             stopwords: The set of stopwords to use or None if no stopword filtering is to be done
-            recognized_categories: The set of categories to be recognized as binary features
-                (whether the document has each one)
-            docid_to_network_features: A dictionary where the document id is mapped to a dictionary
-                with keys for network feature names "page_rank", "hub_score", and "authority_score"
-                and values with the scores for those features
-            ce_scorer: The CrossEncoderScorer object
+            id_to_features: A dictionary where the id is mapped to a dictionary
+                with keys for feature names
         """
-        self.document_index = document_index
-        self.title_index = title_index
-        self.doc_category_info = doc_category_info
+        self.author_index = author_index
+        self.author_on_title_index = author_on_title_index
         self.document_preprocessor = document_preprocessor
         self.stopwords = stopwords
-        self.recognized_categories = list(recognized_categories)
-        self.docid_to_network_features = docid_to_network_features
-        self.docid_to_yr = docid_to_yr
-        self.docid_to_citation = docid_to_citation
+        self.id_to_features = id_to_features
 
-    def get_article_length(self, docid: int) -> int:
+    def get_text_length(self, docid: int) -> int:
         """
         Gets the length of a document (including stopwords).
 
@@ -233,19 +218,7 @@ class L2RFeatureExtractor:
         Returns:
             The length of a document
         """
-        return self.document_index.get_doc_metadata(docid)['length']
-
-    def get_title_length(self, docid: int) -> int:
-        """
-        Gets the length of a document's title (including stopwords).
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            The length of a document's title
-        """
-        return self.title_index.get_doc_metadata(docid)['length']
+        return self.author_index.get_doc_metadata(docid)['length']
 
     def get_tf(self, index: InvertedIndex, docid: int, word_counts: dict[str, int], query_parts: list[str]) -> float:
         """
@@ -287,7 +260,7 @@ class L2RFeatureExtractor:
         score = scorer.score(docid, word_counts, Counter(query_parts))
         return score
 
-    def get_BM25_score(self, docid: int, doc_word_counts: dict[str, int],
+    def get_BM25_score(self, index, docid: int, doc_word_counts: dict[str, int],
                        query_parts: list[str]) -> float:
         """
         Calculates the BM25 score.
@@ -300,11 +273,11 @@ class L2RFeatureExtractor:
         Returns:
             The BM25 score
         """
-        scorer = BM25(self.document_index)
+        scorer = BM25(index)
         score = scorer.score(docid, doc_word_counts, Counter(query_parts))
         return score
 
-    def get_pivoted_normalization_score(self, docid: int, doc_word_counts: dict[str, int],
+    def get_pivoted_normalization_score(self, index, docid: int, doc_word_counts: dict[str, int],
                                         query_parts: list[str]) -> float:
         """
         Calculates the pivoted normalization score.
@@ -317,30 +290,9 @@ class L2RFeatureExtractor:
         Returns:
             The pivoted normalization score
         """
-        scorer = PivotedNormalization(self.document_index)
+        scorer = PivotedNormalization(index)
         score = scorer.score(docid, doc_word_counts, Counter(query_parts))
         return score
-
-    def get_document_categories(self, docid: int) -> list:
-        """
-        Generates a list of binary features indicating which of the recognized categories that the document has.
-        Category features should be deterministically ordered so list[0] should always correspond to the same
-        category. For example, if a document has one of the three categories, and that category is mapped to
-        index 1, then the binary feature vector would look like [0, 1, 0].
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            A list containing binary list of which recognized categories that the given document has
-        """
-        doc_categories = []
-        for cat in self.recognized_categories:
-            if cat in self.doc_category_info[docid]:
-                doc_categories.append(1)
-            else:
-                doc_categories.append(0)
-        return doc_categories
 
     def get_pagerank_score(self, docid: int) -> float:
         """
@@ -353,90 +305,10 @@ class L2RFeatureExtractor:
             The PageRank score
         """
         try:
-            pagerank = self.docid_to_network_features[docid]['pgr_scores']
+            pagerank = self.id_to_features[docid]['pagerank']
         except:
             pagerank = 0
         return pagerank
-
-    def get_hits_hub_score(self, docid: int) -> float:
-        """
-        Gets the HITS hub score for the given document.
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            The HITS hub score
-        """
-        try:
-            hub_score = self.docid_to_network_features[docid]['hub_scores']
-        except:
-            hub_score = 0
-        return hub_score
-
-    def get_hits_authority_score(self, docid: int) -> float:
-        """
-        Gets the HITS authority score for the given document.
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            The HITS authority score
-        """
-        try:
-            authority_score = self.docid_to_network_features[docid]['auth_scores']
-        except:
-            authority_score = 0
-        return authority_score
-    
-    def get_paris_hierarchy_score(self, docid: int) -> float:
-        """
-        Gets the Paris hierarchy score for the given document.
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            The Paris hierarchy score
-        """
-        try:
-            paris_hierarchy_score = self.docid_to_network_features[docid]['paris_hierarchy']
-        except:
-            paris_hierarchy_score = np.zeros(3)
-        return paris_hierarchy_score
-    
-    def get_louvain_membership_group(self, docid: int) -> float:
-        """
-        Gets the Louvain membership group for the given document.
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            The Louvain membership group
-        """
-        try:
-            louvain_membership = self.docid_to_network_features[docid]['louvain_membership']
-        except:
-            louvain_membership = np.zeros(10000)
-        return louvain_membership
-    
-    def get_year_release(self, docid: int) -> float:
-        """
-        Gets the Year release for the given document.
-
-        Args:
-            docid: The id of the document
-
-        Returns:
-            Year release
-        """
-        try:
-            year_release = self.docid_to_yr[docid]
-        except:
-            year_release = -1
-        return year_release
     
     def get_citation(self, docid: int) -> float:
         """
@@ -449,21 +321,35 @@ class L2RFeatureExtractor:
             citation number
         """
         try:
-            citation = self.docid_to_citation[docid]
+            citation = self.id_to_features[docid]['total_citations']
         except:
             citation = 0
         return citation
+    
+    def get_h_index(self, docid: int) -> float:
+        """
+        Gets h_index number for the given document.
+
+        Args:
+            docid: The id of the document
+
+        Returns:
+            h_index number
+        """
+        try:
+            h_index = self.id_to_features[docid]['h_index']
+        except:
+            h_index = 0
+        return h_index
 
     def generate_features(self, docid: int, doc_word_counts: dict[str, int],
-                          title_word_counts: dict[str, int], query_parts: list[str],
-                          query: str) -> list:
+                          query_parts: list[str], query: str) -> list:
         """
         Generates a dictionary of features for a given document and query.
 
         Args:
             docid: The id of the document to generate features for
             doc_word_counts: The words in the document's main text mapped to their frequencies
-            title_word_counts: The words in the document's title mapped to their frequencies
             query_parts : A list of tokenized query terms to generate features for
             query: The query in its original form (no stopword filtering/tokenization)
 
@@ -474,39 +360,31 @@ class L2RFeatureExtractor:
         """
         feature_vector = []
     
-        feature_vector.append(self.get_article_length(docid))
-
-        feature_vector.append(self.get_title_length(docid))
+        feature_vector.append(self.get_text_length(docid))
 
         feature_vector.append(len(query_parts))
 
-        feature_vector.append(self.get_tf(self.document_index, docid, doc_word_counts, query_parts))
+        feature_vector.append(self.get_tf(self.author_index, docid, doc_word_counts, query_parts))
 
-        feature_vector.append(self.get_tf_idf(self.document_index, docid, doc_word_counts, query_parts))
+        feature_vector.append(self.get_tf_idf(self.author_index, docid, doc_word_counts, query_parts))
+        
+        feature_vector.append(self.get_tf(self.author_on_title_index, docid, doc_word_counts, query_parts))
 
-        feature_vector.append(self.get_tf(self.title_index, docid, title_word_counts, query_parts))
+        feature_vector.append(self.get_tf_idf(self.author_on_title_index, docid, doc_word_counts, query_parts))
 
-        feature_vector.append(self.get_tf_idf(self.title_index, docid, title_word_counts, query_parts))
+        feature_vector.append(self.get_BM25_score(self.author_index, docid, doc_word_counts, query_parts))
 
-        feature_vector.append(self.get_BM25_score(docid, doc_word_counts, query_parts))
+        feature_vector.append(self.get_pivoted_normalization_score(self.author_index, docid, doc_word_counts, query_parts))
+        
+        feature_vector.append(self.get_BM25_score(self.author_on_title_index, docid, doc_word_counts, query_parts))
 
-        feature_vector.append(self.get_pivoted_normalization_score(docid, doc_word_counts, query_parts))
+        feature_vector.append(self.get_pivoted_normalization_score(self.author_on_title_index, docid, doc_word_counts, query_parts))
 
         feature_vector.append(self.get_pagerank_score(docid))
-
-        feature_vector.append(self.get_hits_hub_score(docid))
-
-        feature_vector.append(self.get_hits_authority_score(docid))
-        
-        # feature_vector += list(self.get_paris_hierarchy_score(docid))
-        
-#         feature_vector += self.get_louvain_membership_group(docid)
-        
-        feature_vector.append(self.get_year_release(docid))
         
         feature_vector.append(self.get_citation(docid))
-
-        # feature_vector += self.get_document_categories(docid)
+        
+        feature_vector.append(self.get_h_index(docid))
 
         return feature_vector
 
