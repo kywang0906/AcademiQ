@@ -26,11 +26,11 @@ The goal is to build a search engine that:
 
 ```plaintext
 AcademiQ/
-├── data/               # Data ingestion and preprocessing
-├── backend/            # Backend server using Flask
-├── frontend/           # User Interface with HTML/CSS/Bootstrap
-├── model/              # LambdaMART and LightGBM code
-├── requirements.txt    # Python dependencies
+├── dataset/            # Data ingestion and preprocessing
+├── files/              # LambdaMART and LightGBM code
+├── static/             # Project logo and CSS/Bootstrap of template
+├── templates/          # HTML template of user interface
+├── main.py             # Backend server using Flask
 └── README.md           # Project documentation
 ```
 
